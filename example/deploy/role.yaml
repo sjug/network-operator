@@ -218,9 +218,9 @@ rules:
     - list
     - watch
 - apiGroups:
-  - security.openshift.io
+    - security.openshift.io
   resources:
-  - securitycontextconstraints
+    - securitycontextconstraints
   verbs:
   - get
 - apiGroups:
@@ -284,4 +284,9 @@ rules:
     - update
     - patch
     - delete
-=======
+- apiGroups:
+    - rbac.authorization.k8s.io
+  resources:
+    - roles
+  verbs:
+    - get
