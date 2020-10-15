@@ -42,6 +42,6 @@ seccompProfiles:
 supplementalGroups:
   type: RunAsAny
 users:
-- system:serviceaccount:mlnx-network-operator:ofed-driver
+- system:serviceaccount:mlnx-network-operator-resources:ofed-driver
 volumes:
 - '*'
