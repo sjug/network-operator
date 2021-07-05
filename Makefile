@@ -36,7 +36,7 @@ IMAGE_TAG_BASE ?= mellanox.com/network-operator
 BUNDLE_IMG ?= $(IMAGE_TAG_BASE)-bundle:v$(VERSION)
 
 # Image URL to use all building/pushing image targets
-IMG ?= quay.io/sejug/network-operator:latest
+IMG ?= docker.io/mellanox/network-operator:latest
 # Produce CRDs that work back to Kubernetes 1.11 (no version conversion)
 CRD_OPTIONS ?= "crd:trivialVersions=true,preserveUnknownFields=false"
 
@@ -46,6 +46,43 @@ GOBIN=$(shell go env GOPATH)/bin
 else
 GOBIN=$(shell go env GOBIN)
 endif
+
+# Other vars
+GOPATH?=$(CURDIR)/.gopath
+TOOLSDIR=$(CURDIR)/bin
+
+ORG_PATH=github.com/Mellanox
+PACKAGE=network-operator
+REPO_PATH=$(ORG_PATH)/$(PACKAGE)
+BASE=$(GOPATH)/src/$(REPO_PATH)
+
+GO      = go
+GOLANGCI_LINT = $(GOBIN)/golangci-lint
+# golangci-lint version should be updated periodically
+# we keep it fixed to avoid it from unexpectedly failing on the project
+# in case of a version bump
+GOLANGCI_LINT_VER = v1.23.8
+
+HADOLINT = $(TOOLSDIR)/hadolint
+HADOLINT_VER = v1.23.0
+
+HELM = $(TOOLSDIR)/helm
+GET_HELM = $(TOOLSDIR)/get_helm.sh
+HELM_VER = v3.5.3
+
+TIMEOUT = 15
+Q = $(if $(filter 1,$V),,@)
+
+# Docker vars
+IMAGE_BUILDER ?= docker
+DOCKERARGS=
+ifdef HTTP_PROXY
+	DOCKERARGS += --build-arg http_proxy=$(HTTP_PROXY)
+endif
+ifdef HTTPS_PROXY
+	DOCKERARGS += --build-arg https_proxy=$(HTTPS_PROXY)
+endif
+IMAGE_BUILD_OPTS += $(DOCKERARGS)
 
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # This is a requirement for 'setup-envtest.sh' in the test target.
@@ -99,11 +136,51 @@ build: generate fmt vet ## Build manager binary.
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./main.go
 
-docker-build: test ## Build docker image with the manager.
-	podman build -t ${IMG} .
+image: test ## Build docker image with the manager.
+	${IMAGE_BUILDER} build -t ${IMG} . ${IMAGE_BUILD_OPTS}
 
 docker-push: ## Push docker image with the manager.
-	podman push ${IMG}
+	${IMAGE_BUILDER} push ${IMG}
+
+##@ Tests
+
+.PHONY: lint
+lint: | $(BASE) $(GOLANGCI_LINT) ; $(info  running golangci-lint...) @ ## Run golangci-lint
+	$Q mkdir -p $(BASE)/test
+	$Q cd $(BASE) && ret=0 && \
+		test -z "$$($(GOLANGCI_LINT) run --timeout=10m | tee $(BASE)/test/lint.out)" || ret=1 ; \
+		cat $(BASE)/test/lint.out ; rm -rf $(BASE)/test ; \
+	 exit $$ret
+
+.PHONY: lint-dockerfile
+lint-dockerfile: $(HADOLINT) ; $(info  running Dockerfile lint with hadolint...) @ ## Run hadolint
+# DL3018 - allow installing apks without explicit version
+# DL3007 - allow using "latest" tag for images
+	$Q $(HADOLINT) --ignore DL3018 --ignore DL3007 Dockerfile
+
+.PHONY: lint-helm
+lint-helm: $(HELM) ; $(info  running lint for helm charts...) @ ## Run helm lint
+	$Q $(HELM) lint $(CHART_PATH)
+
+##@ Tools
+
+$(GOLANGCI_LINT): | $(BASE) ; $(info  building golangci-lint...)
+	$Q curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(GOBIN) $(GOLANGCI_LINT_VER)
+
+GOVERALLS = $(GOBIN)/goveralls
+$(GOBIN)/goveralls: | $(BASE) ; $(info  building goveralls...)
+	$Q go get github.com/mattn/goveralls
+
+
+$(HADOLINT): | $(TOOLSDIR) ; $(info  install hadolint...)
+	$Q curl -sSfL -o $(HADOLINT)  https://github.com/hadolint/hadolint/releases/download/$(HADOLINT_VER)/hadolint-Linux-x86_64
+	$Q chmod +x $(HADOLINT)
+
+$(HELM): | $(TOOLSDIR) ; $(info  install helm...)
+	$Q curl -fsSL -o $(GET_HELM) https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3
+	$Q chmod +x $(GET_HELM)
+	$Q env HELM_INSTALL_DIR=$(TOOLSDIR) PATH=$(PATH):$(TOOLSDIR) $(GET_HELM) --no-sudo -v $(HELM_VER)
+	$Q rm -f $(GET_HELM)
 
 ##@ Deployment
 
@@ -152,7 +229,7 @@ bundle: manifests kustomize ## Generate bundle manifests and metadata, then vali
 
 .PHONY: bundle-build
 bundle-build: ## Build the bundle image.
-	docker build -f bundle.Dockerfile -t $(BUNDLE_IMG) .
+	${IMAGE_BUILDER} build -f bundle.Dockerfile -t $(BUNDLE_IMG) .
 
 .PHONY: bundle-push
 bundle-push: ## Push the bundle image.
